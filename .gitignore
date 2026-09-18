@@ -1,0 +1,14 @@
+.data/
+.protocol/
+node_modules/
+.env
+.env.*
+!.env.example
+.codex/
+auth.json
+*.log
+*.lnk
+*.pem
+*.key
+.DS_Store
+Thumbs.db
