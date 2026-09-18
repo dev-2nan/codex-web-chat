@@ -24,6 +24,9 @@ jobs:
           node --check server.mjs
           node --check public/app.js
           node --check public/interactions.js
+          node --check public/updates.js
+          node --check lib/updater.mjs
+          node --check lib/update-worker.mjs
       - name: Check launcher syntax
         shell: pwsh
         run: |

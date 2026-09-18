@@ -10,7 +10,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 const base='http://127.0.0.1:43128';
 let server;
 test('local web server',async t=>{
-  server=spawn(process.execPath,['server.mjs'],{windowsHide:true,env:{...process.env,CODEX_WEB_PORT:'43128',CODEX_WEB_DATA_DIR:mkdtempSync(path.join(tmpdir(),'codex-web-test-')),CODEX_WEB_CLI:path.resolve('test/fake-codex.mjs')},stdio:'ignore'});
+  server=spawn(process.execPath,['server.mjs'],{windowsHide:true,env:{...process.env,CODEX_WEB_UPDATE_CHECK:'0',CODEX_WEB_PORT:'43128',CODEX_WEB_DATA_DIR:mkdtempSync(path.join(tmpdir(),'codex-web-test-')),CODEX_WEB_CLI:path.resolve('test/fake-codex.mjs')},stdio:'ignore'});
   t.after(()=>server?.kill());
   let started=false;
   for(let i=0;i<40;i++){try{await fetch(base+'/health');started=true;break;}catch{await delay(100);}}
@@ -31,6 +31,13 @@ await t.test('does not expose project files or unknown conversations',async()=>{
   assert.equal((await fetch(base+'/.data/chats.json')).status,404);
   assert.equal((await fetch(base+'/api/chat?id=unknown')).status,404);
   const state=await(await fetch(base+'/api/state')).json();assert.deepEqual(state.chats,[]);assert.equal(state.csrf.length,64);
+});
+await t.test('update endpoints do not require Codex, and installation requires the action token',async()=>{
+  const update=await(await fetch(base+'/api/update')).json();assert.match(update.currentVersion,/^\d+\.\d+\.\d+$/);assert.equal(update.enabled,false);
+  assert.equal((await fetch(base+'/api/update/install',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).status,403);
+  const {csrf}=await(await fetch(base+'/api/state')).json();
+  const response=await fetch(base+'/api/update/install',{method:'POST',headers:{'Content-Type':'application/json','X-Codex-Token':csrf},body:'{}'});
+  assert.equal(response.status,409);assert.match((await response.json()).error,/비활성화/);
 });
 await t.test('uploads require authentication and reach Codex with display metadata',async()=>{
   const state=await(await fetch(base+'/api/state')).json();

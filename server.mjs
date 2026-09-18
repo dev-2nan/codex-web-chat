@@ -9,8 +9,10 @@ import { contextUsage, validateSelection, mergeRateLimits } from './lib/telemetr
 import { createAttachmentStore, attachmentInput, attachmentError, MAX_FILE_BYTES, ACCEPT_FILES } from './lib/attachments.mjs';
 
 import { InteractionBroker, interactionError, safeWebUrl, requestThread } from './lib/interactions.mjs';
+import { createUpdater } from './lib/updater.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const VERSION = JSON.parse(readFileSync(path.join(ROOT,'package.json'),'utf8')).version;
 const PORT = Number(process.env.CODEX_WEB_PORT || 43127);
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 const DATA = process.env.CODEX_WEB_DATA_DIR || path.join(ROOT, '.data');
@@ -88,6 +90,10 @@ function notice(message,threadId=null) {
   const item={id:randomUUID(),message,threadId,at:Date.now()};notices.push(item);if(notices.length>50)notices.shift();broadcast();
 }
 const broker=new InteractionBroker(message=>send(message),()=>broadcast(),notice);
+let inFlight=0;
+const updater=createUpdater({root:ROOT,data:DATA,port:PORT,version:VERSION,enabled:process.env.CODEX_WEB_UPDATE_CHECK!=='0',
+  isBusy:()=>!!(inFlight||busy.size||pending.size||hydrating.size||login||chats.some(c=>c.active)||broker.list().length),
+  changed:broadcast,shutdown:()=>{save();child?.kill();for(const client of clients)client.end();server.close();server.closeAllConnections();setTimeout(()=>process.exit(0),100);}});
 const send = message => child.stdin.write(JSON.stringify(message) + '\n');
 function rpc(method, params = {}) {
   return new Promise((resolve, reject) => {
@@ -196,15 +202,20 @@ async function body(req) {
   let value=''; for await (const chunk of req) { value+=chunk; if(value.length>200000) throw new Error('메시지가 너무 깁니다.'); }
   return JSON.parse(value || '{}');
 }
-const files = {'/':['index.html','text/html'],'/app.js':['app.js','text/javascript'],'/interactions.js':['interactions.js','text/javascript'],'/telemetry.js':['../lib/telemetry.mjs','text/javascript'],'/style.css':['style.css','text/css'],'/icon.svg':['icon.svg','image/svg+xml']};
+const files = {'/':['index.html','text/html'],'/app.js':['app.js','text/javascript'],'/updates.js':['updates.js','text/javascript'],'/interactions.js':['interactions.js','text/javascript'],'/telemetry.js':['../lib/telemetry.mjs','text/javascript'],'/style.css':['style.css','text/css'],'/icon.svg':['icon.svg','image/svg+xml']};
 const server = http.createServer(async (req,res) => {
+  let tracked=false;
   try {
     if(req.headers.host !== `127.0.0.1:${PORT}`) return json(res,403,{error:'허용되지 않은 주소입니다.'});
     if(req.headers.origin && req.headers.origin !== ORIGIN) return json(res,403,{error:'허용되지 않은 요청입니다.'});
     res.setHeader('X-Content-Type-Options','nosniff');
     res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
     const url = new URL(req.url,ORIGIN);
-    if(req.method==='GET' && url.pathname==='/health') return json(res,200,{app:'codex-web-chat',version:'1.3.0'});
+    tracked=url.pathname.startsWith('/api/')&&!['/api/state','/api/events','/api/attachment','/api/update'].includes(url.pathname)&&!url.pathname.startsWith('/api/update/');
+    if(tracked&&updater.locked()){tracked=false;return json(res,503,{error:'업데이트 중입니다. 잠시 후 다시 시도해 주세요.'});}
+    if(tracked)inFlight++;
+    if(req.method==='GET' && url.pathname==='/health') return json(res,200,{app:'codex-web-chat',version:VERSION,updateProbe:process.env.CODEX_WEB_UPDATE_PROBE||null});
+    if(req.method==='GET' && url.pathname==='/api/update') return json(res,200,updater.state());
     if(req.method==='GET' && url.pathname==='/api/state') return json(res,200,{csrf,cwd:ROOT,failure,chats:chats.map(x=>({id:x.id,title:x.title,updatedAt:x.updatedAt,active:x.active})),requests:broker.list(),notices,connectionId,interactionVersion:1,login,quotaSnapshot,quotaUpdatedAt,quotaError,acceptFiles:ACCEPT_FILES});
     if(req.method==='GET' && url.pathname==='/api/attachment') {
       const file=attachments.get(url.searchParams.get('id'));
@@ -238,6 +249,12 @@ const server = http.createServer(async (req,res) => {
     if(req.method==='POST' && url.pathname.startsWith('/api/')) {
       if(req.headers['x-codex-token']!==csrf || !req.headers['content-type']?.startsWith('application/json')) return json(res,403,{error:'화면을 새로고침해 주세요.'});
       const data=await body(req);
+      if(url.pathname==='/api/update/check') return json(res,200,await updater.check(true));
+      if(url.pathname==='/api/update/install') {
+        const begin=await updater.prepare();
+        res.once('finish',()=>setTimeout(begin,150));
+        return json(res,202,{ok:true});
+      }
       if(url.pathname==='/api/reply') {
         const request=broker.reply(String(data.id),data);
         const chat=chats.find(x=>x.id===requestThread(request));
@@ -327,9 +344,11 @@ const server = http.createServer(async (req,res) => {
     }
     json(res,404,{error:'찾을 수 없습니다.'});
   } catch(e) { json(res,e.statusCode||500,{error:e.message}); }
+  finally {if(tracked)inFlight--;}
 });
 for(const chat of chats){if(chat.active)chat.error='서버가 재시작되어 작업이 중단되었습니다. 이전 승인 요청은 만료되었습니다. 내용을 확인하고 다시 요청해 주세요.';chat.active=null;chat.threadStatus={type:'idle'};}
-server.listen(PORT,'127.0.0.1',()=>console.log(`Codex Web: ${ORIGIN}`));
+server.listen(PORT,'127.0.0.1',()=>{console.log(`Codex Web: ${ORIGIN}`);setTimeout(()=>updater.check().catch(console.error),1000).unref();});
+setInterval(()=>updater.check().catch(console.error),60*60*1000).unref();
 server.on('error',e=>{console.error(e.message);process.exit(1);});
 process.on('SIGINT',()=>{child?.kill();server.close();process.exit();});
 process.on('SIGTERM',()=>{child?.kill();server.close();process.exit();});

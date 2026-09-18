@@ -248,6 +248,7 @@ document.addEventListener('dragleave',()=>{if(--dragDepth<=0){dragDepth=0;$('com
 document.addEventListener('drop',e=>{if(e.dataTransfer.files.length){e.preventDefault();dragDepth=0;$('composer').classList.remove('drag-over');addFiles(e.dataTransfer.files);}});
 $('refreshUsage').onclick=async()=>{await Promise.allSettled([refreshUsage(true),catalogError?loadCatalog():Promise.resolve()]);};
 try { const {createInteractionUI}=await import('/interactions.js');interactionUI=createInteractionUI({api,refresh,getState:()=>state,getChat:()=>chat,getCurrent:()=>current,onError:error}); } catch {}
+import('/updates.js').then(({installUpdateUI})=>installUpdateUI({api})).catch(()=>{});
 await boot();
 await Promise.allSettled([loadCatalog(),refreshUsage()]);
 setInterval(()=>{if(!document.hidden)refreshUsage();},60000);

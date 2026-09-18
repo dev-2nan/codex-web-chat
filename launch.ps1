@@ -6,6 +6,20 @@ try {
     $locked = $mutex.WaitOne(30000)
     if (-not $locked) { throw 'Another launcher is still starting. Please try again.' }
     try {
+        # A release installer owns restart while replacing files. Do not start a second server.
+        $updateStatusPath = Join-Path $projectPath '.data/updater/status.json'
+        for ($wait = 0; $wait -lt 120; $wait++) {
+            $updating = $false
+            if (Test-Path -LiteralPath $updateStatusPath) {
+                try {
+                    $updateStatus = Get-Content -LiteralPath $updateStatusPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                    $updating = $updateStatus.phase -in @('installing', 'restarting', 'rollback') -and $null -ne (Get-Process -Id $updateStatus.pid -ErrorAction SilentlyContinue)
+                } catch { }
+            }
+            if (-not $updating) { break }
+            Start-Sleep -Milliseconds 500
+        }
+        if ($updating) { throw 'Update is still running. Please wait and open the shortcut again.' }
         $running = $false
         try { $health = Invoke-RestMethod "$address/health" -TimeoutSec 2; $running = $health.app -eq 'codex-web-chat' } catch { }
         if ($running) {

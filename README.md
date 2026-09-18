@@ -15,6 +15,7 @@ A local web chat interface for Codex CLI, with per-chat model controls, context 
 - 사용량을 클릭하면 토큰 수·초기화 시각·새로고침 버튼 표시
 - Codex의 작업 승인과 사용자 질문을 브라우저에서 처리
 - 바탕화면 바로가기로 서버를 백그라운드에서 시작하고 브라우저 열기
+- GitHub 정식 릴리스 자동 확인, 웹에서 설치·재시작, 시작 실패 시 이전 버전 복구
 - 추가 npm 패키지, DB 서버, Docker, 프런트엔드 빌드 불필요
 
 ## 승인·질문·연결 문제 대응
@@ -73,7 +74,7 @@ Codex CLI **0.155.0의 App Server 프로토콜**을 기준으로 처리합니다
 | Codex CLI | **npm으로 설치한 `@openai/codex`**. `codex app-server`를 지원해야 합니다. 실제 연결 검증 버전은 **0.155.0**입니다. 독립 실행형 Codex만 설치했다면 아래 npm 설치도 필요합니다. |
 | Codex 로그인 | 이 PC의 CLI에서 로그인해야 합니다. 권장 절차는 ChatGPT 로그인입니다. ChatGPT 웹사이트 로그인만으로는 CLI가 로그인되지 않습니다. |
 | 계정 이용 권한 | Codex를 이용할 수 있는 계정과 남은 이용 한도가 필요합니다. 사용 가능한 모델과 한도는 계정에 따라 달라집니다. |
-| Git | clone과 업데이트에 사용합니다. [Git for Windows](https://git-scm.com/downloads/win)를 설치하거나 **Code → Download ZIP**으로 받으세요. |
+| Git | Git 설치에 필요합니다. [Git for Windows](https://git-scm.com/downloads/win). Git 없이 설치하려면 [최신 Releases](https://github.com/dev-2nan/codex-web-chat/releases/latest)의 **codex-web-chat-vX.Y.Z.zip**을 받으세요. Source code ZIP에는 자동 설치용 정보가 없습니다. |
 | PowerShell | 바로가기 생성에 Windows PowerShell을 사용합니다. |
 | 브라우저·인터넷 | 현대적인 브라우저와 Codex 서비스에 연결할 인터넷이 필요합니다. |
 
@@ -95,7 +96,10 @@ Codex CLI **0.155.0의 App Server 프로토콜**을 기준으로 처리합니다
    새 프로세스에서도 PATH가 적용되는지 확인해. 기존 설치는 불필요하게 바꾸지 마.
 3. npm으로 설치한 @openai/codex가 없으면 npm.cmd install -g @openai/codex로 설치해.
    npm.cmd root -g 아래 @openai/codex/bin/codex.js가 존재하는지 확인해.
-4. 내 사용자 폴더 아래 쓰기 가능한 위치에 저장소를 clone해.
+4. GitHub Releases의 최신 정식 버전을 확인하고, 내 사용자 폴더의 쓰기 가능한 위치에
+   해당 vX.Y.Z 태그를 --branch vX.Y.Z 옵션으로 clone해. 임의의 개발 브랜치 대신 정식 버전을 사용해.
+   Git 없이 설치한다면 Releases의 codex-web-chat-vX.Y.Z.zip과 SHA256SUMS.txt를 받고
+   SHA-256을 대조한 뒤 새 폴더에 압축을 풀어. Source code ZIP은 사용하지 마.
    같은 폴더가 이미 있으면 기존 파일·대화 데이터를 덮어쓰지 말고 상태를 확인해.
 5. CLI 로그인이 안 되어 있으면 codex.cmd login을 실행해.
    브라우저 로그인은 내가 직접 완료하도록 알려줘. 내 비밀번호나 인증 토큰을
@@ -261,11 +265,51 @@ Get-Content .\.data\server-error.log -Tail 30
 
 오류 제보에는 OS·Node·CLI 버전과 재현 절차를 적어 주세요. 대화 내용, 토큰, 인증 파일은 공개 이슈에 붙이지 마세요.
 
-## 업데이트 및 개발
+## 업데이트
 
-저장소 폴더에서 `git pull --ff-only`로 업데이트하고 `npm.cmd test`를 실행하세요. 로컬 수정 때문에 pull이 실패하면 변경사항을 보존한 뒤 처리합니다. `.data`는 Git 추적 대상이 아니므로 pull 대상에 포함되지 않습니다.
+**v1.4.0부터 별도의 서버·도메인·GitHub 로그인 없이 업데이트할 수 있습니다.** 바탕화면 바로가기는 앱을 바로 열고, 로컬 웹 서버가 GitHub의 최신 정식 릴리스를 백그라운드에서 확인합니다. 서버가 켜져 있으면 하루 한 번 확인하며, 결과는 PC에 캐시합니다. 오프라인·GitHub 장애에도 기존 버전은 실행됩니다.
 
-정적 화면 수정은 브라우저 새로고침으로 반영됩니다. 서버 코드 변경은 서버 재시작이 필요합니다. 새 버전으로 업데이트한 뒤 **바탕화면 바로가기를 다시 열면 업데이트 적용 여부를 묻습니다.** 진행 중인 대화가 있으면 먼저 완료하거나 중지해야 합니다. 바로가기는 실행 경로와 프로세스를 확인하고, 본인이 “예”를 눌렀을 때만 해당 웹 서버를 재시작합니다. 이전 버전의 서버도 감지합니다. 직접 실행한 서버는 Ctrl+C로 종료 후 다시 실행합니다. 바로가기 실행 서버는 작업 관리자에서 **해당 경로의 `server.mjs`를 실행 중인 Node 프로세스인지 확인 후** 종료하거나 Windows를 재시작한 뒤 바로가기를 여세요.
+1. 새 버전이 있으면 입력창 위에 작은 안내가 표시됩니다. **나중에**를 누르면 해당 버전 안내만 숨깁니다.
+2. 사이드바 **↻ v버전**을 누르면 현재/최신 버전과 변경 사항을 볼 수 있습니다. **업데이트 확인**으로 수동 조회할 수 있습니다. GitHub 호출은 최소 1분 간격으로 제한합니다.
+3. 진행 중인 대화·승인·로그인을 마치고, 입력 중인 메시지와 첨부를 보내거나 비운 다음 **설치하고 다시 시작**을 누르세요.
+4. 다운로드와 SHA-256 검증 → 로컬 수정 확인 → 설치 → 서버 시작 확인 순서로 진행합니다. 정상 연결되면 설치를 시작한 화면이 새로고침됩니다. 설치 중에는 새 작업을 받지 않습니다.
+
+**설치 방식별 처리:**
+
+- **Git clone:** 로컬 수정·추가 파일이 없고 현재 커밋이 릴리스의 조상인 경우에만, 공식 저장소의 릴리스 태그 커밋으로 `fast-forward`합니다. 수정 파일, 개발 커밋의 분기, 덮어쓰기 충돌은 자동으로 해결하지 않습니다. 기존 브랜치를 변경하지 않습니다.
+- **Releases의 설치 ZIP:** `.release-manifest.json`과 현재 파일의 해시를 비교하여 직접 수정한 파일을 보호합니다. 기존 앱 파일을 `.data/updater/`에 백업한 뒤 교체합니다. ZIP 안의 이 숨김 이름 파일도 함께 유지하세요.
+- **Source code ZIP / 임의 복사:** 자동 설치용 기준 정보가 없으므로 새 버전 안내만 표시합니다. 공식 설치 ZIP 또는 Git 설치로 이전해 주세요.
+
+새 서버가 정상적으로 시작하지 못하면 이전 앱 버전으로 복구하여 다시 실행합니다. ZIP 백업과 설치 상태는 `.data/updater/`에 남으며 자동 삭제하지 않습니다. 디스크 고장·전원 강제 종료·외부에서 동시에 파일을 수정하는 경우까지 자동 복구를 보장하지 않습니다. 복구 확인이 필요하다는 안내가 나오면 해당 폴더의 `job.json` / `backup.json` / `status.json`과 서버 로그를 확인하세요. 향후 릴리스의 데이터 형식 변경은 이전 버전이 읽을 수 있도록 설계해야 합니다.
+
+업데이트는 `.data`의 대화·첨부와 사용자 Codex 인증·설정을 교체하지 않습니다. **Codex CLI 자체는 업데이트하지 않습니다.** 필요할 때 `npm.cmd install -g @openai/codex`로 별도 관리합니다. 자동 확인을 끄려면 서버 실행 환경에 `CODEX_WEB_UPDATE_CHECK=0`을 설정하세요. GitHub에 보내는 정보는 공개 릴리스 조회·파일 다운로드 요청이며 대화 내용은 포함하지 않습니다.
+
+### 기존 v1.3 이하에서 처음 전환
+
+기존 버전에는 원격 업데이트 기능이 없으므로 **이번 한 번은 수동 업데이트**가 필요합니다.
+
+- Git 설치는 기존 폴더에서 변경 사항을 보존하고 `git pull --ff-only`를 실행하세요.
+- ZIP 설치는 새 설치 ZIP을 **새 폴더**에 풀고 서버를 종료한 상태에서 기존 `.data`를 복사한 다음, 새 경로의 `install-shortcut.ps1`을 실행하세요. 기존 폴더와 백업은 정상 연결 확인 전까지 보관하세요.
+- 코드를 받은 뒤 **바탕화면 바로가기를 다시 열어 재시작 안내에 “예”**를 누르세요. 작업 중인 대화가 있으면 먼저 완료하거나 중지해야 합니다. 직접 실행한 서버는 Ctrl+C 후 다시 실행합니다. 웹 화면만 새로고침해서는 구형 서버에 업데이트 기능이 생기지 않습니다.
+
+### 운영자가 새 버전 배포하기
+
+일반 `main` 푸시만으로 사용자에게 배포하지 않습니다. 검증한 정식 버전을 태그로 발행합니다.
+
+1. `package.json`의 버전을 올리고 `RELEASE_NOTES.md`를 해당 버전의 변경 사항으로 작성합니다.
+2. `npm.cmd test`를 통과시킨 뒤 변경 사항을 커밋하고 `main`에 푸시합니다.
+3. 아래처럼 **package.json과 같은 버전**의 태그를 푸시합니다.
+
+```powershell
+git tag v1.5.0
+git push origin v1.5.0
+```
+
+`.github/workflows/release.yml`이 테스트 → 추적 중인 앱 파일만 패키징 → ZIP·업데이트 JSON·SHA256SUMS 업로드 → 정식 Release 공개를 수행합니다. 실패하면 공개하지 않으며, 업로드 실패로 남은 초안은 수정 후 처리해야 합니다. 릴리스마다 버전과 태그를 새로 만들고 이미 배포한 파일은 덮어쓰지 마세요. GitHub Actions의 Release 작업이 성공했는지 확인하세요. 사용자에게는 다음 자동 확인 또는 수동 확인 때 표시됩니다. 도메인·자체 서버는 소개/설치 안내 페이지가 필요할 때 선택적으로 사용하면 됩니다.
+
+## 개발
+
+개발 폴더에서는 기존처럼 `git pull --ff-only`, `npm.cmd test`, 서버 재시작을 사용할 수 있습니다. 개발 중 변경 사항이 있으면 웹 자동 설치가 중단되며, 자동으로 stash/reset하지 않습니다.
 
 ```text
 server.mjs              HTTP 서버, Codex JSON-RPC 연결, 대화 저장
@@ -273,6 +317,9 @@ public/                 HTML / CSS / JavaScript / 아이콘
 lib/telemetry.mjs       컨텍스트·한도 계산과 모델 선택 검증
 lib/attachments.mjs     첨부 검증·저장·Codex 입력 변환
 lib/interactions.mjs    승인·질문 응답 검증과 요청 수명 관리
+lib/updater.mjs         릴리스 조회·검증·설치 준비
+lib/update-worker.mjs   서버 재시작·설치·복구
+scripts/build-release.mjs  공개 배포 패키지 생성
 launch.ps1              Windows 백그라운드 실행 및 브라우저 열기
 install-shortcut.ps1    바탕화면 바로가기 생성
 test/                   모의 Codex 기반 테스트 (실제 API 호출 없음)
@@ -298,6 +345,8 @@ npm.cmd test
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-shortcut.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\launch.ps1
 ```
+
+For Git-free installation, download the versioned **codex-web-chat-vX.Y.Z.zip** asset from Releases (not Source code ZIP), verify SHA256SUMS, and keep `.release-manifest.json`. Starting with v1.4, updates are checked daily and installed from the sidebar version button. Active work and local modifications block installation; failed startup rolls back. Earlier versions need a one-time manual update and server restart.
 
 Open `http://127.0.0.1:43127`. No application dependency installation or build step is needed. For custom npm locations, set `CODEX_WEB_CLI` to the full path to `@openai/codex/bin/codex.js`. macOS/Linux setup is unverified; the desktop launcher is Windows-only. Do not expose this personal local server to the Internet. Conversation history stays out of Git; inference still uses the Codex service.
 
