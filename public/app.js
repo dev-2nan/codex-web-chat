@@ -40,6 +40,8 @@ function installPicker(select, heading) {
 }
 function syncPickers(){for(const picker of pickers.values())picker.sync();}
 
+let interactionUI=null,serverErrorShown=null;
+const dismissedNotices=new Set();
 const $ = id => document.getElementById(id);
 let catalog, catalogError=null, settingSaving=false, draft=null, usageLoading=false;
 const effortNames={none:'None · 추론 없음',minimal:'Minimal · 최소',low:'Low · 가볍게',medium:'Medium · 균형 있게',high:'High · 깊게',xhigh:'Extra high · 더 깊게',max:'Max · 최대',ultra:'Ultra · 최대 + 자동 위임'};
@@ -155,6 +157,7 @@ function renderMessages(){
   const signature=JSON.stringify(chat?.items||[]);if(signature===lastRender)return;lastRender=signature;
   const scroll=$('scroll'),nearBottom=scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<140;
   const openTools=new Set([...document.querySelectorAll('details.tool[open]')].map(el=>el.dataset.id));
+  const focused=document.activeElement;const keepFocus=focused?.closest('.request-card')&&$('messages').contains(focused);const caret=keepFocus&&typeof focused.selectionStart==='number'?[focused.selectionStart,focused.selectionEnd]:null;
   $('messages').replaceChildren();
   for(const item of chat?.items||[]){
     if(item.type==='userMessage'||item.type==='agentMessage'){
@@ -166,18 +169,21 @@ function renderMessages(){
       }else{
         const name=document.createElement('div');name.className='speaker';name.textContent='✳ Codex';el.append(name);
         const content=document.createElement('div');content.className='message-body';content.innerHTML=format(text);el.append(content);
+        if(item.questions?.length&&interactionUI)el.append(interactionUI.question(item,current));
         const copy=document.createElement('button');copy.className='copy';copy.textContent='복사';copy.onclick=async()=>{try{await navigator.clipboard.writeText(text);copy.textContent='복사됨';}catch{error('복사하지 못했습니다. 텍스트를 선택해 복사해 주세요.');}};el.append(copy);
       }$('messages').append(el);
-    }else if(['commandExecution','fileChange','mcpToolCall','webSearch','plan'].includes(item.type)){
+    }else if(item.type!=='reasoning'||item.summary?.length){
       const el=document.createElement('details');el.className='tool';el.dataset.id=item.id;el.open=openTools.has(item.id);
-      const labels={commandExecution:'명령 실행',fileChange:'파일 수정',mcpToolCall:'도구 사용',webSearch:'웹 검색',plan:'작업 계획'};
-      const summary=document.createElement('summary');summary.textContent=labels[item.type]+(item.status==='inProgress'?' 중…':'');
-      const content=document.createElement('pre');content.textContent=item.command?item.command+'\n'+(item.aggregatedOutput||''):item.text||JSON.stringify(item.changes||item.arguments||item.action||{},null,2);el.append(summary,content);$('messages').append(el);
+      const labels={commandExecution:'명령 실행',fileChange:'파일 수정',mcpToolCall:'도구 사용',webSearch:'웹 검색',plan:'작업 계획',reasoning:'추론 요약',webNotice:'처리 안내',dynamicToolCall:'연결 도구',collabAgentToolCall:'하위 에이전트',subAgentActivity:'하위 작업',contextCompaction:'컨텍스트 압축',imageGeneration:'이미지 생성',imageView:'이미지 확인',sleep:'대기',enteredReviewMode:'검토 시작',exitedReviewMode:'검토 완료',hookPrompt:'훅 안내',functionCallOutput:'도구 결과'};
+      const summary=document.createElement('summary');summary.textContent=(labels[item.type]||('작업 · '+item.type))+(item.status?' · '+({inProgress:'진행 중',completed:'완료',failed:'실패',declined:'거절'}[item.status]||item.status):'');
+      const content=document.createElement('pre');content.textContent=item.command?item.command+'\n'+(item.aggregatedOutput||''):item.text||(item.type==='reasoning'?item.summary.join('\n'):null)||JSON.stringify(item.result||item.error||item.changes||item.contentItems||item.arguments||item.action||item,(key,value)=>typeof value==='string'&&value.length>20000?value.slice(0,20000)+'\n…긴 출력 일부 생략':value,2);el.append(summary,content);$('messages').append(el);
     }
   }
-  if(nearBottom)scroll.scrollTop=scroll.scrollHeight;
+  if(keepFocus&&document.contains(focused)&&!focused.disabled){focused.focus({preventScroll:true});if(caret)focused.setSelectionRange(...caret);}
+  if(nearBottom&&!keepFocus)scroll.scrollTop=scroll.scrollHeight;
 }
 function renderRequests(){
+  if(interactionUI){interactionUI.render($('requests'));return;}
   const list=(state.requests||[]).filter(r=>r.params.threadId===current);const signature=JSON.stringify(list);if(signature===requestRender)return;requestRender=signature;$('requests').replaceChildren();
   for(const r of list){
     const el=document.createElement('div');el.className='request';
@@ -205,9 +211,9 @@ async function refresh(){
     if(current!==selected){again=true;return;}chat=next;
     $('history').replaceChildren();
     if(!state.chats.length){const empty=document.createElement('p');empty.className='empty-history';empty.textContent='첫 대화를 시작해 보세요';$('history').append(empty);}
-    for(const c of state.chats){const b=document.createElement('button');b.className='history-item'+(c.id===current?' selected':'');b.textContent=(c.active?'● ':'')+c.title;b.title=c.title;b.onclick=()=>choose(c.id);$('history').append(b);}
-    $('welcome').hidden=!!current;renderMessages();renderRequests();controls();renderTelemetry();
-    if(chat?.error||state.failure)error(chat?.error||state.failure);
+    for(const c of state.chats){const b=document.createElement('button');b.className='history-item'+(c.id===current?' selected':'');const count=(state.requests||[]).filter(r=>(r.threadId||r.params.threadId||r.params.conversationId)===c.id).length;b.textContent=(count?'[확인 '+count+'] ':c.active?'● ':'')+c.title;b.title=c.title;b.onclick=()=>choose(c.id);$('history').append(b);}
+    $('welcome').hidden=!!current;renderMessages();renderRequests();controls();renderTelemetry();renderInteractionStatus();
+    const serverError=chat?.error||state.failure;if(serverError){error(serverError);serverErrorShown=serverError;}else if(serverErrorShown){if($('error').textContent===serverErrorShown)error('');serverErrorShown=null;}
   }catch(e){error(e.message);}finally{refreshing=false;if(again){again=false;setTimeout(refresh,80);}}
 }
 $('composer').onsubmit=async e=>{
@@ -222,7 +228,7 @@ $('menu').onclick=()=>$('sidebar').classList.toggle('open');
 $('scroll').onclick=()=>$('sidebar').classList.remove('open');
 $('stop').onclick=async()=>{try{await api('/api/stop',{id:current});}catch(e){error(e.message);}};
 document.querySelectorAll('[data-prompt]').forEach(b=>b.onclick=()=>{$('prompt').value=b.dataset.prompt;$('prompt').dispatchEvent(new Event('input'));$('prompt').focus();});
-async function boot(){await refresh();const events=new EventSource('/api/events');let timer;events.onmessage=()=>{clearTimeout(timer);timer=setTimeout(refresh,80);};events.onerror=()=>error('연결을 다시 시도하고 있습니다. 계속 연결되지 않으면 바탕화면 바로가기를 다시 열어 주세요.');events.onopen=()=>{error('');refresh();};try{const account=await api('/api/account');$('account').textContent=account.loggedIn?'Codex 연결됨':'Codex 로그인 필요';if(!account.loggedIn)error('Codex 로그인이 필요합니다. 설치된 Codex 앱에서 로그인해 주세요.');}catch(e){$('account').textContent='연결 확인 필요';error(e.message);}$('prompt').focus();}
+async function boot(){await refresh();const events=new EventSource('/api/events');let timer;events.onmessage=()=>{if(!timer)timer=setTimeout(()=>{timer=null;refresh();},80);};events.onerror=()=>error('연결을 다시 시도하고 있습니다. 계속 연결되지 않으면 바탕화면 바로가기를 다시 열어 주세요.');events.onopen=()=>{error('');refresh();};try{const account=await api('/api/account');$('account').textContent=account.loggedIn?'Codex 연결됨':'Codex 로그인 필요';if(!account.loggedIn)error('Codex 로그인이 필요합니다. 설치된 Codex 앱에서 로그인해 주세요.');}catch(e){$('account').textContent='연결 확인 필요';error(e.message);}$('prompt').focus();}
 $('modelSelect').onchange=()=>changeSettings(true);
 document.addEventListener('click',event=>{
   document.querySelectorAll('.usage-item[open]').forEach(item=>{if(!item.contains(event.target))item.open=false;});
@@ -241,7 +247,28 @@ document.addEventListener('dragover',e=>{if(e.dataTransfer.types.includes('Files
 document.addEventListener('dragleave',()=>{if(--dragDepth<=0){dragDepth=0;$('composer').classList.remove('drag-over');}});
 document.addEventListener('drop',e=>{if(e.dataTransfer.files.length){e.preventDefault();dragDepth=0;$('composer').classList.remove('drag-over');addFiles(e.dataTransfer.files);}});
 $('refreshUsage').onclick=async()=>{await Promise.allSettled([refreshUsage(true),catalogError?loadCatalog():Promise.resolve()]);};
+try { const {createInteractionUI}=await import('/interactions.js');interactionUI=createInteractionUI({api,refresh,getState:()=>state,getChat:()=>chat,getCurrent:()=>current,onError:error}); } catch {}
 await boot();
 await Promise.allSettled([loadCatalog(),refreshUsage()]);
 setInterval(()=>{if(!document.hidden)refreshUsage();},60000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshUsage();});
+
+function renderInteractionStatus(){
+  const pending=(state?.requests||[]).filter(r=>!r.threadId||r.threadId===current||!state.chats.some(c=>c.id===r.threadId));
+  const questions=(chat?.items||[]).filter(x=>x.questions?.length&&!x.questionReply);
+  const flags=chat?.threadStatus?.activeFlags||[];
+  $('interactionBanner').hidden=!(pending.length||questions.length||flags.length);
+  $('interactionBanner').textContent=pending.length?`확인이 필요한 요청 ${pending.length}개 · 클릭해서 보기`:questions.length?`답변할 수 있는 질문 ${questions.length}개 · 클릭해서 보기`:flags.includes('waitingOnApproval')?'권한 승인을 기다리고 있습니다':'사용자 입력을 기다리고 있습니다';
+  $('working').hidden=!chat?.active;
+  if(chat?.active)$('working').textContent=pending.length?'선택 또는 승인을 기다리고 있어요…':flags.length?'사용자 확인을 기다리고 있어요…':'Codex가 작업하고 있어요…';
+  const notices=(state?.notices||[]).filter(x=>(!x.threadId||x.threadId===current)&&!dismissedNotices.has(x.id)).slice(-5);
+  $('notices').replaceChildren(...notices.map(x=>{const row=document.createElement('div');row.className='notice-row';const details=document.createElement('details'),summary=document.createElement('summary');summary.textContent=x.message.split(' · ')[0].split('\n')[0].slice(0,120);const pre=document.createElement('pre');pre.textContent=x.message;details.append(summary,pre);const close=document.createElement('button');close.type='button';close.textContent='×';close.setAttribute('aria-label','안내 닫기');close.onclick=()=>{dismissedNotices.add(x.id);renderInteractionStatus();};row.append(details,close);return row;}));$('notices').hidden=!notices.length;
+  $('serverUpdate').hidden=!!state?.interactionVersion;
+  $('loginLink').hidden=!state?.login?.url;
+  if(state?.login?.url){try{const u=new URL(state.login.url);if(['https:','http:'].includes(u.protocol))$('loginLink').href=u.href;}catch{}}
+  $('cancelLogin').hidden=!state?.login;
+}
+$('interactionBanner').onclick=()=>{const target=$('requests').firstElementChild||document.querySelector('.request-card[data-awaiting="true"]');target?.scrollIntoView({behavior:'smooth',block:'center'});target?.querySelector('button,input,select')?.focus({preventScroll:true});};
+$('reconnect').onclick=async()=>{try{await refresh();const a=await api('/api/account');$('account').textContent=a.loggedIn?'Codex 연결됨':'Codex 로그인 필요';error('');await Promise.allSettled([loadCatalog(),refreshUsage(true)]);}catch(e){error(e.message);}};
+$('loginButton').onclick=async()=>{try{await api('/api/login',{action:'start'});await refresh();}catch(e){error(e.message);}};
+$('cancelLogin').onclick=async()=>{try{await api('/api/login',{action:'cancel'});await refresh();}catch(e){error(e.message);}};

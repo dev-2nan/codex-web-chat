@@ -64,4 +64,45 @@ await t.test('settings reach Codex turns and stay isolated to the selected chat'
   assert.equal(params.model,'test-b');assert.equal(params.effort,'low');assert.equal(chat.model,'test-b');
   assert.equal((await post('/api/settings',{id:'other-chat',selection:{model:'test-a',effort:'low'}})).status,404);
 });
+await t.test('callbacks survive refresh, validate answers and reject duplicate replies',async()=>{
+  const state=await(await fetch(base+'/api/state')).json();
+  const post=async(route,data)=>{const r=await fetch(base+route,{method:'POST',headers:{'Content-Type':'application/json','X-Codex-Token':state.csrf},body:JSON.stringify(data)});return {status:r.status,data:await r.json()};};
+  for(const scenario of ['approval','file','choice','permission','form','url']){
+    const sent=await post('/api/message',{text:'scenario:'+scenario});assert.equal(sent.status,200);let request;
+    for(let i=0;i<40;i++){request=(await(await fetch(base+'/api/state')).json()).requests.find(x=>x.threadId===sent.data.id);if(request)break;await delay(20);}
+    assert.ok(request,scenario);assert.equal((await(await fetch(base+'/api/state')).json()).requests.find(x=>x.id===request.id).id,request.id);
+    assert.equal((await post('/api/reply',{id:request.id,action:'invalid'})).status,400);
+    const data=scenario==='choice'?{action:'answer',answers:{style:'다른 방식',name:'테스터'}}:scenario==='permission'?{action:'accept',permissionKeys:['network']}:scenario==='form'?{action:'accept',content:{title:'보고서',count:3,confirmed:false,tags:['summary']}}:scenario==='url'?{action:'cancel'}:{action:'decline'};
+    assert.equal((await post('/api/reply',{id:request.id,...data})).status,200);
+    assert.equal((await post('/api/reply',{id:request.id,...data})).status,409);
+  }
+});
+await t.test('async questions steer live turns and start idle turns, with duplicate protection',async()=>{
+  const state=await(await fetch(base+'/api/state')).json();
+  const post=async(route,data)=>{const r=await fetch(base+route,{method:'POST',headers:{'Content-Type':'application/json','X-Codex-Token':state.csrf},body:JSON.stringify(data)});return {status:r.status,data:await r.json()};};
+  for(const scenario of ['async-live','async-done']){
+    const sent=await post('/api/message',{text:'scenario:'+scenario});let chat,item;
+    for(let i=0;i<40;i++){chat=await(await fetch(base+'/api/chat?id='+sent.data.id)).json();item=chat.items.find(x=>x.questions?.length);if(item)break;await delay(20);}
+    assert.ok(item);const data={id:chat.id,itemId:item.id,answers:['자세히','민트색으로']};
+    assert.equal((await post('/api/question',{...data,answers:['']})).status,400);
+    assert.equal((await post('/api/question',data)).status,200);
+    assert.equal((await post('/api/question',data)).status,409);
+    chat=await(await fetch(base+'/api/chat?id='+chat.id)).json();assert.equal(chat.items.find(x=>x.id===item.id).questionReply.status,'sent');
+    if(scenario==='async-live')assert.ok(chat.items.some(x=>x.text?.includes('"steered":true')));
+  }
+});
+await t.test('interruption expires callbacks, unsupported requests surface, and connection loss recovers',async()=>{
+  let state=await(await fetch(base+'/api/state')).json();
+  const post=async(route,data)=>{const r=await fetch(base+route,{method:'POST',headers:{'Content-Type':'application/json','X-Codex-Token':state.csrf},body:JSON.stringify(data)});return {status:r.status,data:await r.json()};};
+  const sent=await post('/api/message',{text:'scenario:approval'});let request;
+  for(let i=0;i<40;i++){state=await(await fetch(base+'/api/state')).json();request=state.requests.find(x=>x.threadId===sent.data.id);if(request)break;await delay(20);}
+  await post('/api/stop',{id:sent.data.id});assert.equal((await post('/api/reply',{id:request.id,action:'accept'})).status,409);
+  await post('/api/message',{text:'scenario:unknown'});
+  for(let i=0;i<40;i++){state=await(await fetch(base+'/api/state')).json();if(state.notices.length)break;await delay(20);}
+  assert.ok(state.notices.some(x=>x.message.includes('future/unsupported')));
+  await post('/api/message',{text:'scenario:disconnect'});
+  for(let i=0;i<40;i++){state=await(await fetch(base+'/api/state')).json();if(state.failure)break;await delay(20);}
+  assert.ok(state.failure);assert.equal(state.requests.length,0);assert.ok(state.chats.every(x=>!x.active));
+  assert.equal((await post('/api/message',{text:'reconnected'})).status,200);
+});
 });

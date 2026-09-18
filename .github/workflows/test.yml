@@ -23,5 +23,12 @@ jobs:
         run: |
           node --check server.mjs
           node --check public/app.js
+          node --check public/interactions.js
+      - name: Check launcher syntax
+        shell: pwsh
+        run: |
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'launch.ps1'), [ref]$null, [ref]$parseErrors) | Out-Null
+          if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
       - name: Run tests (no Codex account needed)
         run: npm test
