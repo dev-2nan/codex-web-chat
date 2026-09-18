@@ -48,15 +48,16 @@ test('release checks are cached, stable-only, tolerate offline and block active 
 
 const fixtureServer=`import http from 'node:http';import {readFileSync} from 'node:fs';const version=JSON.parse(readFileSync(new URL('./package.json',import.meta.url))).version;http.createServer((req,res)=>{res.setHeader('Content-Type','application/json');res.end(JSON.stringify({app:'codex-web-chat',version,updateProbe:process.env.CODEX_WEB_UPDATE_PROBE,pid:process.pid}));}).listen(Number(process.env.CODEX_WEB_PORT),'127.0.0.1');`;
 async function unusedPort(){const s=net.createServer();await new Promise(r=>s.listen(0,'127.0.0.1',r));const port=s.address().port;await new Promise(r=>s.close(r));return port;}
-for(const mode of ['release','git'])for(const fail of [false,true])test(`${mode} worker ${fail?'rolls back a failed startup':'installs and restarts'} without touching conversations`,{timeout:30000},async t=>{
+for(const mode of ['release','git'])for(const fail of (mode==='git'?[false,true,'ignored']:[false,true]))test(`${mode} worker ${fail==='ignored'?'protects ignored local files':fail?'rolls back a failed startup':'installs and restarts'} without touching conversations`,{timeout:30000},async t=>{
   const root=temp(),data=path.join(root,'.data'),directory=path.join(data,'updater','job');mkdirSync(directory,{recursive:true});
-  const old=makeBundle('1.0.0',{'server.mjs':fixtureServer}),next=makeBundle('2.0.0',{'server.mjs':fail?'throw new Error("broken startup")':fixtureServer});materialize(root,old);
+  const old=makeBundle('1.0.0',{'server.mjs':fixtureServer}),next=makeBundle('2.0.0',{'server.mjs':fail===true?'throw new Error("broken startup")':fixtureServer,...(fail==='ignored'?{'public/user.txt':'release file'}:{})});materialize(root,old);
   writeFileSync(path.join(data,'chats.json'),'["private conversation"]');
   const git=args=>execFileSync('git',['-C',root,...args],{encoding:'utf8',windowsHide:true}).trim();let oldHead;
   if(mode==='git') {
     git(['init','--quiet']);git(['config','user.name','Update Test']);git(['config','user.email','test@example.invalid']);git(['config','core.autocrlf','false']);
-    writeFileSync(path.join(root,'.gitignore'),'.data/\n.release-manifest.json\n');git(['add','.']);git(['commit','-qm','old']);oldHead=git(['rev-parse','HEAD']);
-    materialize(root,next);git(['add','.']);git(['commit','-qm','new']);next.commit=git(['rev-parse','HEAD']);git(['reset','--keep',oldHead]);
+    writeFileSync(path.join(root,'.gitignore'),'.data/\n.release-manifest.json\npublic/user.txt\n');git(['add','.']);git(['commit','-qm','old']);oldHead=git(['rev-parse','HEAD']);
+    materialize(root,next);git(['add','.']);if(fail==='ignored')git(['add','-f','public/user.txt']);git(['commit','-qm','new']);next.commit=git(['rev-parse','HEAD']);git(['reset','--keep',oldHead]);
+    if(fail==='ignored'){mkdirSync(path.join(root,'public'),{recursive:true});writeFileSync(path.join(root,'public/user.txt'),'private ignored file');}
   }
   const bytes=Buffer.from(JSON.stringify(next)),packageFile=path.join(directory,'package.json');writeFileSync(packageFile,bytes);
   for(const name of ['update-worker.mjs','update-package.mjs'])copyFileSync(path.resolve('lib',name),path.join(directory,name));
@@ -72,5 +73,6 @@ for(const mode of ['release','git'])for(const fail of [false,true])test(`${mode}
   let health;try{health=await(await fetch(origin+'/health')).json();}finally{if(health?.pid)process.kill(health.pid);}
   assert.equal(result?.phase,fail?'failed':'complete',JSON.stringify(result)+' '+errors);assert.equal(health.version,fail?'1.0.0':'2.0.0');
   assert.equal(readFileSync(path.join(data,'chats.json'),'utf8'),'["private conversation"]');
+  if(fail==='ignored')assert.equal(readFileSync(path.join(root,'public/user.txt'),'utf8'),'private ignored file');
   if(mode==='git'){assert.equal(git(['rev-parse','HEAD']),fail?oldHead:next.commit);assert.equal(git(['status','--porcelain']),'');}
 });
