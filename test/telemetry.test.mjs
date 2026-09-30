@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { contextUsage, quotaForModel, mergeRateLimits, validateSelection } from '../lib/telemetry.mjs';
+import { contextUsage, quotaForModel, mergeRateLimits, validateSelection, catalogDefaults } from '../lib/telemetry.mjs';
 
 test('context uses last request, not cumulative tokens; compaction can lower it', () => {
   const usage={last:{totalTokens:25000},total:{totalTokens:900000},modelContextWindow:100000};
@@ -39,4 +39,13 @@ test('model and effort validation rejects unsupported combinations',()=>{
   assert.deepEqual(validateSelection(models,{model:'a',effort:'low'}),{model:'a',effort:'low'});
   assert.throws(()=>validateSelection(models,{model:'a',effort:'ultra'}));
   assert.throws(()=>validateSelection(models,{model:'unknown',effort:'low'}));
+});
+
+test('new catalog defaults replace unavailable configuration while preserving supported user choices',()=>{
+  const models=[{model:'gpt-6.1-sol',isDefault:true,defaultReasoningEffort:'low',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'ultra'}]},
+    {model:'old-model',defaultReasoningEffort:'low',supportedReasoningEfforts:[{reasoningEffort:'low'}]}];
+  assert.deepEqual(catalogDefaults(models,{model:'retired-model',model_reasoning_effort:'high'}),{model:'gpt-6.1-sol',effort:'low'});
+  assert.deepEqual(catalogDefaults(models,{model:'gpt-6.1-sol',model_reasoning_effort:'ultra'}),{model:'gpt-6.1-sol',effort:'ultra'});
+  assert.deepEqual(catalogDefaults(models,{model:'old-model',model_reasoning_effort:'ultra'}),{model:'old-model',effort:'low'});
+  assert.deepEqual(catalogDefaults([]),{model:null,effort:null});
 });

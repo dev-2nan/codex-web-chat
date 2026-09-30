@@ -1,21 +1,24 @@
 import http from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { createInterface } from 'node:readline';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, createReadStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { contextUsage, validateSelection, mergeRateLimits } from './lib/telemetry.mjs';
+import { contextUsage, validateSelection, mergeRateLimits, catalogDefaults } from './lib/telemetry.mjs';
 import { createAttachmentStore, attachmentInput, attachmentError, MAX_FILE_BYTES, ACCEPT_FILES } from './lib/attachments.mjs';
 
 import { InteractionBroker, interactionError, safeWebUrl, requestThread } from './lib/interactions.mjs';
 import { createUpdater } from './lib/updater.mjs';
+import { createCodexUpdater } from './lib/codex-updater.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const VERSION = JSON.parse(readFileSync(path.join(ROOT,'package.json'),'utf8')).version;
 const PORT = Number(process.env.CODEX_WEB_PORT || 43127);
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 const DATA = process.env.CODEX_WEB_DATA_DIR || path.join(ROOT, '.data');
+const CLI = process.env.CODEX_WEB_CLI || path.join(process.env.APPDATA || '', 'npm/node_modules/@openai/codex/bin/codex.js');
 mkdirSync(DATA, { recursive: true });
 const attachments = createAttachmentStore(DATA);
 const INDEX = path.join(DATA, 'chats.json');
@@ -28,18 +31,17 @@ let catalog = null, catalogPromise = null, quotaSnapshot = null, quotaPromise = 
 const notices=[], connectionId=randomUUID();
 let login=null;
 const hydrated = new Set(), hydrating = new Map();
-async function getCatalog() {
-  if (catalog) return catalog;
+let catalogAt = 0;
+async function getCatalog(force = false) {
+  if (catalog && !force && Date.now() - catalogAt < 60000) return catalog;
   if (catalogPromise) return catalogPromise;
   catalogPromise = (async () => {
     await connect();
     const config = await rpc('config/read', { cwd: ROOT });
     let cursor, models = [];
     do { const page = await rpc('model/list', { limit: 100, ...(cursor ? { cursor } : {}) }); models.push(...page.data); cursor = page.nextCursor; } while (cursor);
-    const preferred = models.find(x => x.model === config.config.model) || models.find(x => x.isDefault);
-    const configuredEffort = config.config.model_reasoning_effort;
-    catalog = { models, defaults: { model: config.config.model || preferred?.model || null,
-      effort: configuredEffort || preferred?.defaultReasoningEffort || null } };
+    catalog = { models, defaults: catalogDefaults(models, config.config) };
+    catalogAt = Date.now();
     return catalog;
   })().finally(() => { catalogPromise = null; });
   return catalogPromise;
@@ -92,8 +94,18 @@ function notice(message,threadId=null) {
 const broker=new InteractionBroker(message=>send(message),()=>broadcast(),notice);
 let inFlight=0;
 const updater=createUpdater({root:ROOT,data:DATA,port:PORT,version:VERSION,enabled:process.env.CODEX_WEB_UPDATE_CHECK!=='0',
-  isBusy:()=>!!(inFlight||busy.size||pending.size||hydrating.size||login||chats.some(c=>c.active)||broker.list().length),
+  isBusy:()=>!!(codexUpdater.locked()||inFlight||busy.size||pending.size||hydrating.size||login||chats.some(c=>c.active)||broker.list().length),
   changed:broadcast,shutdown:()=>{save();child?.kill();for(const client of clients)client.end();server.close();server.closeAllConnections();setTimeout(()=>process.exit(0),100);}});
+const codexUpdater=createCodexUpdater({data:DATA,bin:CLI,enabled:process.env.CODEX_WEB_CODEX_UPDATE_CHECK!=='0'&&process.env.CODEX_WEB_UPDATE_CHECK!=='0',
+  isBusy:()=>!!(updater.locked()||inFlight||busy.size||pending.size||hydrating.size||login||chats.some(c=>c.active)||broker.list().length),
+  changed:broadcast,disconnect:async()=>{
+    const worker=child;
+    if(worker&&worker.exitCode===null){
+      if(process.platform==='win32')await promisify(execFile)('taskkill.exe',['/pid',String(worker.pid),'/T','/F'],{windowsHide:true,timeout:10000});
+      else await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('Codex 종료 시간 초과')),10000);worker.once('exit',()=>{clearTimeout(timer);resolve();});worker.kill();});
+    }
+    child=null;ready=null;catalog=null;loaded.clear();hydrated.clear();failure=null;
+  },reconnect:async()=>{await connect();await getCatalog(true);broadcast();}});
 const send = message => child.stdin.write(JSON.stringify(message) + '\n');
 function rpc(method, params = {}) {
   return new Promise((resolve, reject) => {
@@ -115,7 +127,7 @@ function connect() {
   if (ready) return ready;
   ready = (async () => {
     failure = null;
-    const bin = process.env.CODEX_WEB_CLI || path.join(process.env.APPDATA || '', 'npm/node_modules/@openai/codex/bin/codex.js');
+    const bin = CLI;
     if (!existsSync(bin)) throw new Error('Codex 설치 파일을 찾지 못했습니다. CODEX_WEB_CLI 설정을 확인해 주세요.');
     child = spawn(process.execPath, [bin, 'app-server'], { cwd: ROOT, windowsHide: true, stdio: ['pipe','pipe','pipe'] });
     const worker=child;
@@ -134,7 +146,7 @@ function connect() {
         broker.receive(m);
       } else event(m.method, m.params || {});
     });
-    await rpc('initialize', {clientInfo:{name:'codex_web_local',title:'Codex 웹 대화',version:'1.3.0'},capabilities:{experimentalApi:true,requestAttestation:false}});
+    await rpc('initialize', {clientInfo:{name:'codex_web_local',title:'Codex 웹 대화',version:VERSION},capabilities:{experimentalApi:true,requestAttestation:false}});
     send({method:'initialized',params:{}});
   })().catch(e => { ready = null; failure = e.message; throw e; });
   return ready;
@@ -202,7 +214,7 @@ async function body(req) {
   let value=''; for await (const chunk of req) { value+=chunk; if(value.length>200000) throw new Error('메시지가 너무 깁니다.'); }
   return JSON.parse(value || '{}');
 }
-const files = {'/':['index.html','text/html'],'/app.js':['app.js','text/javascript'],'/updates.js':['updates.js','text/javascript'],'/interactions.js':['interactions.js','text/javascript'],'/telemetry.js':['../lib/telemetry.mjs','text/javascript'],'/style.css':['style.css','text/css'],'/icon.svg':['icon.svg','image/svg+xml']};
+const files = {'/':['index.html','text/html'],'/app.js':['app.js','text/javascript'],'/updates.js':['updates.js','text/javascript'],'/codex-updates.js':['codex-updates.js','text/javascript'],'/interactions.js':['interactions.js','text/javascript'],'/telemetry.js':['../lib/telemetry.mjs','text/javascript'],'/style.css':['style.css','text/css'],'/icon.svg':['icon.svg','image/svg+xml']};
 const server = http.createServer(async (req,res) => {
   let tracked=false;
   try {
@@ -211,11 +223,12 @@ const server = http.createServer(async (req,res) => {
     res.setHeader('X-Content-Type-Options','nosniff');
     res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
     const url = new URL(req.url,ORIGIN);
-    tracked=url.pathname.startsWith('/api/')&&!['/api/state','/api/events','/api/attachment','/api/update'].includes(url.pathname)&&!url.pathname.startsWith('/api/update/');
-    if(tracked&&updater.locked()){tracked=false;return json(res,503,{error:'업데이트 중입니다. 잠시 후 다시 시도해 주세요.'});}
+    tracked=url.pathname.startsWith('/api/')&&!['/api/state','/api/events','/api/attachment','/api/update','/api/codex-update'].includes(url.pathname)&&!url.pathname.startsWith('/api/update/')&&!url.pathname.startsWith('/api/codex-update/');
+    if(tracked&&(updater.locked()||codexUpdater.locked())){tracked=false;return json(res,503,{error:'업데이트 중입니다. 잠시 후 다시 시도해 주세요.'});}
     if(tracked)inFlight++;
     if(req.method==='GET' && url.pathname==='/health') return json(res,200,{app:'codex-web-chat',version:VERSION,updateProbe:process.env.CODEX_WEB_UPDATE_PROBE||null});
     if(req.method==='GET' && url.pathname==='/api/update') return json(res,200,updater.state());
+    if(req.method==='GET' && url.pathname==='/api/codex-update') return json(res,200,codexUpdater.state());
     if(req.method==='GET' && url.pathname==='/api/state') return json(res,200,{csrf,cwd:ROOT,failure,chats:chats.map(x=>({id:x.id,title:x.title,updatedAt:x.updatedAt,active:x.active})),requests:broker.list(),notices,connectionId,interactionVersion:1,login,quotaSnapshot,quotaUpdatedAt,quotaError,acceptFiles:ACCEPT_FILES});
     if(req.method==='GET' && url.pathname==='/api/attachment') {
       const file=attachments.get(url.searchParams.get('id'));
@@ -229,7 +242,7 @@ const server = http.createServer(async (req,res) => {
       for await(const chunk of req){size+=chunk.length;if(size>MAX_FILE_BYTES)throw attachmentError('파일당 최대 20 MB입니다.',413);chunks.push(chunk);}
       return json(res,201,attachments.save(url.searchParams.get('name'),Buffer.concat(chunks)));
     }
-    if(req.method==='GET' && url.pathname==='/api/catalog') return json(res,200,await getCatalog());
+    if(req.method==='GET' && url.pathname==='/api/catalog') return json(res,200,await getCatalog(url.searchParams.get('refresh')==='1'));
     if(req.method==='GET' && url.pathname==='/api/usage') {
       await getQuota(url.searchParams.get('refresh') === '1');
       return json(res,200,{quotaSnapshot,quotaUpdatedAt,quotaError});
@@ -249,6 +262,9 @@ const server = http.createServer(async (req,res) => {
     if(req.method==='POST' && url.pathname.startsWith('/api/')) {
       if(req.headers['x-codex-token']!==csrf || !req.headers['content-type']?.startsWith('application/json')) return json(res,403,{error:'화면을 새로고침해 주세요.'});
       const data=await body(req);
+      if(url.pathname==='/api/codex-update/check') return json(res,200,await codexUpdater.check(true));
+      if(url.pathname==='/api/codex-update/dismiss') return json(res,200,codexUpdater.dismiss(data.action,data.version));
+      if(url.pathname==='/api/codex-update/install') return json(res,200,await codexUpdater.install(data.version));
       if(url.pathname==='/api/update/check') return json(res,200,await updater.check(true));
       if(url.pathname==='/api/update/install') {
         const begin=await updater.prepare();
@@ -347,8 +363,9 @@ const server = http.createServer(async (req,res) => {
   finally {if(tracked)inFlight--;}
 });
 for(const chat of chats){if(chat.active)chat.error='서버가 재시작되어 작업이 중단되었습니다. 이전 승인 요청은 만료되었습니다. 내용을 확인하고 다시 요청해 주세요.';chat.active=null;chat.threadStatus={type:'idle'};}
-server.listen(PORT,'127.0.0.1',()=>{console.log(`Codex Web: ${ORIGIN}`);setTimeout(()=>updater.check().catch(console.error),1000).unref();});
+server.listen(PORT,'127.0.0.1',()=>{console.log(`Codex Web: ${ORIGIN}`);setTimeout(()=>Promise.allSettled([updater.check(),codexUpdater.check()]),1000).unref();});
 setInterval(()=>updater.check().catch(console.error),60*60*1000).unref();
+setInterval(()=>codexUpdater.check().catch(console.error),60*60*1000).unref();
 server.on('error',e=>{console.error(e.message);process.exit(1);});
 process.on('SIGINT',()=>{child?.kill();server.close();process.exit();});
 process.on('SIGTERM',()=>{child?.kill();server.close();process.exit();});

@@ -52,6 +52,25 @@ await t.test('uploads require authentication and reach Codex with display metada
   const user=chat.items.find(x=>x.type==='userMessage');assert.equal(user.displayText,'');assert.equal(user.attachments[0].id,file.id);
   const params=JSON.parse(chat.items.at(-1).text);assert.match(params.input[1].text,/notes.txt/);
 });
+await t.test('Codex update routes require a token and remain independent from web releases',async()=>{
+  const response=await fetch(base+'/api/codex-update');assert.equal(response.status,200);
+  const update=await response.json();assert.equal(update.enabled,false);assert.equal(update.currentVersion,null);
+  for(const action of ['check','dismiss','install'])assert.equal((await fetch(base+'/api/codex-update/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).status,403);
+  const {csrf}=await(await fetch(base+'/api/state')).json();
+  const blocked=await fetch(base+'/api/codex-update/install',{method:'POST',headers:{'Content-Type':'application/json','X-Codex-Token':csrf},body:JSON.stringify({version:'1.0.0'})});
+  assert.equal(blocked.status,409);assert.match((await blocked.json()).error,/비활성화/);
+});
+await t.test('model refresh replaces the cache and includes new models from later pages',async()=>{
+  const get=async suffix=>(await(await fetch(base+'/api/catalog'+suffix)).json());
+  const first=await get('');const cached=await get('');assert.deepEqual(first,cached);
+  const fresh=await get('?refresh=1');assert.notEqual(fresh.models[0].description,first.models[0].description);
+  assert.equal(fresh.models.find(x=>x.model==='gpt-6.1-sol').displayName,'GPT-6.1-Sol');
+  const {csrf}=await(await fetch(base+'/api/state')).json();
+  const sent=await fetch(base+'/api/message',{method:'POST',headers:{'Content-Type':'application/json','X-Codex-Token':csrf},body:JSON.stringify({text:'new model',selection:{model:'gpt-6.1-sol',effort:'ultra'}})});
+  assert.equal(sent.status,200);const {id}=await sent.json();let chat;
+  for(let i=0;i<40;i++){chat=await(await fetch(base+'/api/chat?id='+id)).json();if(!chat.active)break;await delay(20);}
+  assert.equal(JSON.parse(chat.items.at(-1).text).model,'gpt-6.1-sol');
+});
 await t.test('settings reach Codex turns and stay isolated to the selected chat',async()=>{
   const state=await(await fetch(base+'/api/state')).json();
   const post=async(route,data)=>{const res=await fetch(base+route,{method:'POST',headers:{'Content-Type':'application/json','X-Codex-Token':state.csrf},body:JSON.stringify(data)});return {status:res.status,data:await res.json()};};

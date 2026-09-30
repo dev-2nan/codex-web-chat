@@ -5,6 +5,7 @@ const output=value=>process.stdout.write(JSON.stringify(value)+'\n');
 const models=[{model:'test-a',displayName:'Test A',isDefault:true,defaultReasoningEffort:'high',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'high'}]},{model:'test-b',displayName:'Test B',defaultReasoningEffort:'low',supportedReasoningEfforts:[{reasoningEffort:'low'}]}];
 let turnNumber=0;
 let callbackId=1000;
+let catalogReads=0;
 const callbacks=new Map(),activeTurns=new Map();
 function finish(threadId,turnId,status='completed'){activeTurns.delete(threadId);output({method:'turn/completed',params:{threadId,turn:{id:turnId,status}}});}
 createInterface({input:process.stdin}).on('line',line=>{
@@ -24,7 +25,7 @@ createInterface({input:process.stdin}).on('line',line=>{
       output({method:'item/completed',params:{threadId:m.params.threadId,item:{id:'steer-'+m.id,type:'agentMessage',text:JSON.stringify({steered:true,input:m.params.input})}}});
       finish(m.params.threadId,m.params.expectedTurnId);break;
     }
-    case 'model/list':result={data:models,nextCursor:null};break;
+    case 'model/list':result=m.params.cursor?{data:[{model:'gpt-6.1-sol',displayName:'GPT-6.1-Sol',defaultReasoningEffort:'low',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'ultra'}]}],nextCursor:null}:{data:models.map(x=>({...x,description:'catalog '+(++catalogReads)})),nextCursor:'next-models'};break;
     case 'config/read':result={config:{model:'test-a',model_reasoning_effort:'high'}};break;
     case 'account/rateLimits/read':result={rateLimits:{limitId:'codex',primary:{usedPercent:83,windowDurationMins:10080,resetsAt:2000000000}}};break;
     case 'thread/start':case 'thread/resume':result={thread:{id:m.params.threadId||'test-thread-'+randomUUID()},model:m.params.model||'test-a',reasoningEffort:m.params.config?.model_reasoning_effort||'high'};break;

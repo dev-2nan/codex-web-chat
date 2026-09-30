@@ -95,7 +95,7 @@ function renderTelemetry(){
   $('telemetryNote').textContent=catalogError?'모델 목록을 불러오지 못했습니다. ↻ 버튼으로 다시 시도해 주세요.':state?.quotaError?(state.quotaUpdatedAt?'한도 조회 실패 · 마지막 확인값입니다.':'한도를 조회하지 못했습니다.')+' ↻ 버튼으로 다시 시도해 주세요.':overdue?'표시된 초기화 시각이 지났습니다. 새로고침해 실제 잔여량을 확인하세요.':chat?.metadataError?'기존 대화 정보를 확인하지 못했습니다. 다음 응답에서 다시 측정합니다.':'';
   syncPickers();
 }
-async function loadCatalog(){try{catalog=await api('/api/catalog');catalogError=null;}catch(e){catalogError=e.message;}renderTelemetry();}
+async function loadCatalog(force=false){try{catalog=await api('/api/catalog'+(force?'?refresh=1':''));catalogError=null;}catch(e){catalogError=e.message;}renderTelemetry();}
 async function refreshUsage(force=false){
   if(usageLoading)return;usageLoading=true;$('refreshUsage').disabled=true;renderTelemetry();
   try{const usage=await api('/api/usage'+(force?'?refresh=1':''));Object.assign(state,usage);renderTelemetry();}catch(e){$('telemetryNote').textContent='한도를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.';}
@@ -246,13 +246,14 @@ document.addEventListener('dragenter',e=>{if(e.dataTransfer.types.includes('File
 document.addEventListener('dragover',e=>{if(e.dataTransfer.types.includes('Files'))e.preventDefault();});
 document.addEventListener('dragleave',()=>{if(--dragDepth<=0){dragDepth=0;$('composer').classList.remove('drag-over');}});
 document.addEventListener('drop',e=>{if(e.dataTransfer.files.length){e.preventDefault();dragDepth=0;$('composer').classList.remove('drag-over');addFiles(e.dataTransfer.files);}});
-$('refreshUsage').onclick=async()=>{await Promise.allSettled([refreshUsage(true),catalogError?loadCatalog():Promise.resolve()]);};
+$('refreshUsage').onclick=async()=>{await Promise.allSettled([refreshUsage(true),loadCatalog(true)]);};
 try { const {createInteractionUI}=await import('/interactions.js');interactionUI=createInteractionUI({api,refresh,getState:()=>state,getChat:()=>chat,getCurrent:()=>current,onError:error}); } catch {}
 import('/updates.js').then(({installUpdateUI})=>installUpdateUI({api})).catch(()=>{});
+import('/codex-updates.js').then(({installCodexUpdateUI})=>installCodexUpdateUI({api,onUpdated:()=>Promise.allSettled([loadCatalog(true),refreshUsage(true),refresh()])})).catch(()=>{});
 await boot();
 await Promise.allSettled([loadCatalog(),refreshUsage()]);
-setInterval(()=>{if(!document.hidden)refreshUsage();},60000);
-document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshUsage();});
+setInterval(()=>{if(!document.hidden)Promise.allSettled([refreshUsage(),loadCatalog()]);},60000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)Promise.allSettled([refreshUsage(),loadCatalog()]);});
 
 function renderInteractionStatus(){
   const pending=(state?.requests||[]).filter(r=>!r.threadId||r.threadId===current||!state.chats.some(c=>c.id===r.threadId));
@@ -270,6 +271,6 @@ function renderInteractionStatus(){
   $('cancelLogin').hidden=!state?.login;
 }
 $('interactionBanner').onclick=()=>{const target=$('requests').firstElementChild||document.querySelector('.request-card[data-awaiting="true"]');target?.scrollIntoView({behavior:'smooth',block:'center'});target?.querySelector('button,input,select')?.focus({preventScroll:true});};
-$('reconnect').onclick=async()=>{try{await refresh();const a=await api('/api/account');$('account').textContent=a.loggedIn?'Codex 연결됨':'Codex 로그인 필요';error('');await Promise.allSettled([loadCatalog(),refreshUsage(true)]);}catch(e){error(e.message);}};
+$('reconnect').onclick=async()=>{try{await refresh();const a=await api('/api/account');$('account').textContent=a.loggedIn?'Codex 연결됨':'Codex 로그인 필요';error('');await Promise.allSettled([loadCatalog(true),refreshUsage(true)]);}catch(e){error(e.message);}};
 $('loginButton').onclick=async()=>{try{await api('/api/login',{action:'start'});await refresh();}catch(e){error(e.message);}};
 $('cancelLogin').onclick=async()=>{try{await api('/api/login',{action:'cancel'});await refresh();}catch(e){error(e.message);}};
